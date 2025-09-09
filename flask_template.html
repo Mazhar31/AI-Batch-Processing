@@ -346,6 +346,25 @@
             min-width: 40px;
             font-weight: bold;
         }
+        
+        .upload-progress {
+            margin-top: 15px;
+        }
+        
+        .upload-spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -714,6 +733,19 @@ Make it engaging and informative.</textarea>
                 return;
             }
             
+            // Show loading state
+            const uploadArea = document.querySelector('.upload-area');
+            const originalContent = uploadArea.innerHTML;
+            uploadArea.innerHTML = `
+                <div style="font-size: 48px; margin-bottom: 15px;">⏳</div>
+                <h3>Uploading...</h3>
+                <p>Processing ${file.name}</p>
+                <div class="upload-progress">
+                    <div class="upload-spinner"></div>
+                </div>
+            `;
+            uploadArea.style.pointerEvents = 'none';
+            
             const formData = new FormData();
             formData.append('file', file);
             
@@ -758,6 +790,28 @@ Make it engaging and informative.</textarea>
             .catch(error => {
                 showAlert(`Upload error: ${error.message}`, 'error');
                 document.getElementById('fileInfo').style.display = 'none';
+                
+                // Reset upload area on error
+                const uploadArea = document.querySelector('.upload-area');
+                uploadArea.innerHTML = `
+                    <div style="font-size: 48px; margin-bottom: 15px;">📁</div>
+                    <h3>Drag & Drop your file here</h3>
+                    <p>or click to browse</p>
+                    <p style="margin-top: 10px; font-size: 0.9em; color: #666;" id="supportedFormats">
+                        Loading supported formats...
+                    </p>
+                    <p style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                        • CSV: Header row with column names<br>
+                        • JSON: Array of objects with consistent keys<br>
+                        • TXT: One item per line
+                    </p>
+                `;
+                uploadArea.style.pointerEvents = 'auto';
+                
+                // Re-initialize dynamic content
+                const sizeMB = Math.round(CONFIG.MAX_FILE_SIZE / (1024 * 1024));
+                const formatsText = `Supports ${CONFIG.SUPPORTED_EXTENSIONS.join(', ').toUpperCase()} files (max ${sizeMB}MB)`;
+                document.getElementById('supportedFormats').textContent = formatsText;
             });
         }
         
