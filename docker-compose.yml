@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  ai-batch-processor:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+    volumes:
+      - ./outputs:/app/outputs
+    restart: unless-stopped
