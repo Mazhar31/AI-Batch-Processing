@@ -784,14 +784,7 @@ Make it engaging and informative.</textarea>
                 document.getElementById('startBtn').disabled = false;
                 document.getElementById('startBtn').textContent = '🚀 Start Batch Processing';
                 
-                showAlert(`✅ File uploaded successfully! Found ${data.rows} items with ${data.columns.length} columns.`, 'success');
-                addLogEntry(`📁 Loaded ${data.rows} items from ${data.filename}`);
-            })
-            .catch(error => {
-                showAlert(`Upload error: ${error.message}`, 'error');
-                document.getElementById('fileInfo').style.display = 'none';
-                
-                // Reset upload area on error
+                // Reset upload area to normal state
                 const uploadArea = document.querySelector('.upload-area');
                 uploadArea.innerHTML = `
                     <div style="font-size: 48px; margin-bottom: 15px;">📁</div>
@@ -812,6 +805,16 @@ Make it engaging and informative.</textarea>
                 const sizeMB = Math.round(CONFIG.MAX_FILE_SIZE / (1024 * 1024));
                 const formatsText = `Supports ${CONFIG.SUPPORTED_EXTENSIONS.join(', ').toUpperCase()} files (max ${sizeMB}MB)`;
                 document.getElementById('supportedFormats').textContent = formatsText;
+                
+                showAlert(`✅ File uploaded successfully! Found ${data.rows} items with ${data.columns.length} columns.`, 'success');
+                addLogEntry(`📁 Loaded ${data.rows} items from ${data.filename}`);
+            })
+            .catch(error => {
+                showAlert(`Upload error: ${error.message}`, 'error');
+                document.getElementById('fileInfo').style.display = 'none';
+                
+                // Reset upload area on error
+                resetUploadArea();
             });
         }
         
@@ -1187,6 +1190,29 @@ Make it engaging and informative.</textarea>
             document.getElementById('progressFill').style.width = '0%';
             document.getElementById('statusLog').innerHTML = '<div>[Ready] Waiting to start batch processing...</div>';
             document.getElementById('resetBtn').style.display = 'none';
+        }
+        
+        function resetUploadArea() {
+            const uploadArea = document.querySelector('.upload-area');
+            uploadArea.innerHTML = `
+                <div style="font-size: 48px; margin-bottom: 15px;">📁</div>
+                <h3>Drag & Drop your file here</h3>
+                <p>or click to browse</p>
+                <p style="margin-top: 10px; font-size: 0.9em; color: #666;" id="supportedFormats">
+                    Loading supported formats...
+                </p>
+                <p style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                    • CSV: Header row with column names<br>
+                    • JSON: Array of objects with consistent keys<br>
+                    • TXT: One item per line
+                </p>
+            `;
+            uploadArea.style.pointerEvents = 'auto';
+            
+            // Re-initialize dynamic content
+            const sizeMB = Math.round(CONFIG.MAX_FILE_SIZE / (1024 * 1024));
+            const formatsText = `Supports ${CONFIG.SUPPORTED_EXTENSIONS.join(', ').toUpperCase()} files (max ${sizeMB}MB)`;
+            document.getElementById('supportedFormats').textContent = formatsText;
         }
         
         function resetSystem() {
