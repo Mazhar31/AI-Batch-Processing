@@ -442,12 +442,14 @@ async def process_single_item(semaphore, group_name, row, conversation_history,
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] API Request for group {group_name} ({conversation_type}): {prompt[:100]}...")
             
             # Thread-safe result storage
+            main_content_value = row.get(config.mapping.main_content, "") if config.mapping.main_content else ""
             result = {
                 "group": group_name,
                 "input": row,
                 "prompt": prompt,
                 "response": response,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "main_content": main_content_value
             }
             
             with _results_lock:
@@ -698,13 +700,14 @@ async def export_results():
         export_data = []
         for result in results:
             item = {
-                "group": result["group"],
-                "response": result["response"],
-                "timestamp": result["timestamp"]
+                "group": result.get("group", ""),
+                "main_content": result.get("main_content", ""),
+                "response": result.get("response", ""),
+                "timestamp": result.get("timestamp", "")
             }
             if include_prompt:
-                item["prompt"] = result["prompt"]
-                item["input"] = result["input"]
+                item["prompt"] = result.get("prompt", "")
+                item["input"] = result.get("input", {})
             export_data.append(item)
         
         json_content = json.dumps(export_data, indent=2)
@@ -719,22 +722,23 @@ async def export_results():
         
         csv_content = io.StringIO()
         if results:
-            fieldnames = ["group", "response", "timestamp"]
+            fieldnames = ["group", "main_content", "response", "timestamp"]
             if include_prompt:
-                fieldnames = ["group", "prompt", "input", "response", "timestamp"]
+                fieldnames = ["group", "main_content", "prompt", "input", "response", "timestamp"]
             
             writer = csv.DictWriter(csv_content, fieldnames=fieldnames)
             writer.writeheader()
             
             for result in results:
                 row = {
-                    "group": result["group"], 
-                    "response": result["response"],
-                    "timestamp": result["timestamp"]
+                    "group": result.get("group", ""),
+                    "main_content": result.get("main_content", ""),
+                    "response": result.get("response", ""),
+                    "timestamp": result.get("timestamp", "")
                 }
                 if include_prompt:
-                    row["prompt"] = result["prompt"]
-                    row["input"] = json.dumps(result["input"]) if isinstance(result["input"], dict) else str(result["input"])
+                    row["prompt"] = result.get("prompt", "")
+                    row["input"] = json.dumps(result.get("input", {})) if isinstance(result.get("input"), dict) else str(result.get("input", ""))
                 writer.writerow(row)
         
         return Response(
@@ -751,12 +755,18 @@ async def export_results():
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for i, result in enumerate(results):
-                file_content = result["response"]
+                file_content = result.get("response", "")
                 if include_prompt:
-                    input_str = json.dumps(result["input"], indent=2) if isinstance(result["input"], dict) else str(result["input"])
-                    file_content = f"INPUT:\n{input_str}\n\nPROMPT:\n{result['prompt']}\n\nRESPONSE:\n{file_content}\n\nTIMESTAMP: {result['timestamp']}"
+                    input_data = result.get("input", {})
+                    input_str = json.dumps(input_data, indent=2) if isinstance(input_data, dict) else str(input_data)
+                    prompt_text = result.get("prompt", "")
+                    timestamp_text = result.get("timestamp", "")
+                    file_content = f"INPUT:\n{input_str}\n\nPROMPT:\n{prompt_text}\n\nRESPONSE:\n{file_content}\n\nTIMESTAMP: {timestamp_text}"
                 
-                safe_group = "".join(c for c in str(result['group']) if c.isalnum() or c in (' ', '-', '_')).strip()
+                group_name = result.get("group", "unknown")
+                safe_group = "".join(c for c in str(group_name) if c.isalnum() or c in (' ', '-', '_')).strip()
+                if not safe_group:  # Handle empty group names
+                    safe_group = "unknown"
                 filename = f"result_{i+1:03d}_{safe_group}_{timestamp}.txt" if timestamp else f"result_{i+1:03d}_{safe_group}.txt"
                 zipf.writestr(filename, file_content)
         
@@ -774,12 +784,18 @@ async def export_results():
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             # Add individual files
             for i, result in enumerate(results):
-                file_content = result["response"]
+                file_content = result.get("response", "")
                 if include_prompt:
-                    input_str = json.dumps(result["input"], indent=2) if isinstance(result["input"], dict) else str(result["input"])
-                    file_content = f"INPUT:\n{input_str}\n\nPROMPT:\n{result['prompt']}\n\nRESPONSE:\n{file_content}\n\nTIMESTAMP: {result['timestamp']}"
+                    input_data = result.get("input", {})
+                    input_str = json.dumps(input_data, indent=2) if isinstance(input_data, dict) else str(input_data)
+                    prompt_text = result.get("prompt", "")
+                    timestamp_text = result.get("timestamp", "")
+                    file_content = f"INPUT:\n{input_str}\n\nPROMPT:\n{prompt_text}\n\nRESPONSE:\n{file_content}\n\nTIMESTAMP: {timestamp_text}"
                 
-                safe_group = "".join(c for c in str(result['group']) if c.isalnum() or c in (' ', '-', '_')).strip()
+                group_name = result.get("group", "unknown")
+                safe_group = "".join(c for c in str(group_name) if c.isalnum() or c in (' ', '-', '_')).strip()
+                if not safe_group:  # Handle empty group names
+                    safe_group = "unknown"
                 filename = f"individual/result_{i+1:03d}_{safe_group}_{timestamp}.txt" if timestamp else f"individual/result_{i+1:03d}_{safe_group}.txt"
                 zipf.writestr(filename, file_content)
             
@@ -787,13 +803,14 @@ async def export_results():
             export_data = []
             for result in results:
                 item = {
-                    "group": result["group"],
-                    "response": result["response"],
-                    "timestamp": result["timestamp"]
+                    "group": result.get("group", ""),
+                    "main_content": result.get("main_content", ""),
+                    "response": result.get("response", ""),
+                    "timestamp": result.get("timestamp", "")
                 }
                 if include_prompt:
-                    item["prompt"] = result["prompt"]
-                    item["input"] = result["input"]
+                    item["prompt"] = result.get("prompt", "")
+                    item["input"] = result.get("input", {})
                 export_data.append(item)
             
             json_filename = f"results_{timestamp}.json" if timestamp else "results.json"
@@ -801,22 +818,23 @@ async def export_results():
             
             # Add consolidated CSV
             csv_content = io.StringIO()
-            fieldnames = ["group", "response", "timestamp"]
+            fieldnames = ["group", "main_content", "response", "timestamp"]
             if include_prompt:
-                fieldnames = ["group", "prompt", "input", "response", "timestamp"]
+                fieldnames = ["group", "main_content", "prompt", "input", "response", "timestamp"]
             
             writer = csv.DictWriter(csv_content, fieldnames=fieldnames)
             writer.writeheader()
             
             for result in results:
                 row = {
-                    "group": result["group"], 
-                    "response": result["response"],
-                    "timestamp": result["timestamp"]
+                    "group": result.get("group", ""),
+                    "main_content": result.get("main_content", ""),
+                    "response": result.get("response", ""),
+                    "timestamp": result.get("timestamp", "")
                 }
                 if include_prompt:
-                    row["prompt"] = result["prompt"]
-                    row["input"] = json.dumps(result["input"]) if isinstance(result["input"], dict) else str(result["input"])
+                    row["prompt"] = result.get("prompt", "")
+                    row["input"] = json.dumps(result.get("input", {})) if isinstance(result.get("input"), dict) else str(result.get("input", ""))
                 writer.writerow(row)
             
             csv_filename = f"results_{timestamp}.csv" if timestamp else "results.csv"
