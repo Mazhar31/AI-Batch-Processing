@@ -387,11 +387,19 @@
                     <p style="margin-top: 10px; font-size: 0.9em; color: #666;" id="supportedFormats">
                         Loading supported formats...
                     </p>
-                    <p style="font-size: 0.8em; color: #888; margin-top: 5px;">
-                        • CSV: Header row with column names<br>
-                        • JSON: Array of objects with consistent keys<br>
-                        • TXT: One item per line
-                    </p>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 10px; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto;">
+                        <strong>📄 CSV:</strong> Header row with column names<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">topic,audience,priority</code><br><br>
+                        
+                        <strong>📋 JSON:</strong> Array of objects with consistent keys<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">[{"topic": "AI", "audience": "Students"}]</code><br><br>
+                        
+                        <strong>📝 TXT Simple:</strong> One prompt per line<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">Write about AI for students</code><br><br>
+                        
+                        <strong>📊 TXT Structured:</strong> Header + comma-separated data<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">topic,audience,priority<br>AI Basics,Students,High</code>
+                    </div>
                 </div>
                 <input type="file" id="fileInput" accept=".csv,.json,.txt" style="display: none;">
                 
@@ -655,12 +663,18 @@ Make it engaging and informative.</textarea>
                 if (data.total_errors === 0) {
                     showAlert(`🎉 Batch processing completed successfully! All ${data.total_processed} items processed.`, 'success');
                 } else {
-                    showAlert(`⚠️ Batch completed with ${data.total_errors} errors out of ${data.total_processed} items.`, 'warning');
+                    const successful = data.total_processed - data.total_errors;
+                    showAlert(`⚠️ Batch completed: ${successful} successful, ${data.total_errors} errors (${data.total_processed} total items).`, 'warning');
                 }
             });
             
             socket.on('rate_limit_wait', function(data) {
-                addLogEntry(`⚠️ Rate limit reached, waiting ${data.wait_time.toFixed(1)} seconds...`, 'warning');
+                if (data.retry_attempt) {
+                    const errorType = data.error_type === 'general' ? 'API error' : 'Rate limit';
+                    addLogEntry(`⚠️ ${errorType} - Retry ${data.retry_attempt}/${data.max_retries}: waiting ${data.wait_time.toFixed(1)} seconds...`, 'warning');
+                } else {
+                    addLogEntry(`⚠️ Rate limit reached, waiting ${data.wait_time.toFixed(1)} seconds...`, 'warning');
+                }
             });
         }
         
@@ -793,11 +807,19 @@ Make it engaging and informative.</textarea>
                     <p style="margin-top: 10px; font-size: 0.9em; color: #666;" id="supportedFormats">
                         Loading supported formats...
                     </p>
-                    <p style="font-size: 0.8em; color: #888; margin-top: 5px;">
-                        • CSV: Header row with column names<br>
-                        • JSON: Array of objects with consistent keys<br>
-                        • TXT: One item per line
-                    </p>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 10px; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto;">
+                        <strong>📄 CSV:</strong> Header row with column names<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">topic,audience,priority</code><br><br>
+                        
+                        <strong>📋 JSON:</strong> Array of objects with consistent keys<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">[{"topic": "AI", "audience": "Students"}]</code><br><br>
+                        
+                        <strong>📝 TXT Simple:</strong> One prompt per line<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">Write about AI for students</code><br><br>
+                        
+                        <strong>📊 TXT Structured:</strong> Header + comma-separated data<br>
+                        <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">topic,audience,priority<br>AI Basics,Students,High</code>
+                    </div>
                 `;
                 uploadArea.style.pointerEvents = 'auto';
                 
@@ -944,6 +966,12 @@ Make it engaging and informative.</textarea>
                 errors.push(`Retry attempts must be between ${CONFIG.RETRY_RANGE[0]} and ${CONFIG.RETRY_RANGE[1]}`);
             }
             
+            // Validate output directory
+            const outputDir = document.getElementById('outputDir').value.trim();
+            if (!outputDir) {
+                errors.push('Output directory is required');
+            }
+            
             if (errors.length > 0) {
                 showValidationAlert(`❌ Configuration errors: ${errors.join(' • ')}`, 'error');
                 return false;
@@ -1086,7 +1114,7 @@ Make it engaging and informative.</textarea>
                     document.getElementById('resetBtn').style.display = 'inline-block';
                     
                     // Update status
-                    document.getElementById('progressStatus').innerHTML = '<strong style="color: #dc3545;">⏹️ Stopped by User</strong> Partial results available';
+                    document.getElementById('progressStatus').innerHTML = '<strong style="color: #dc3545;">⏹️ Stopped by User</strong> Partial results available for export';
                     document.getElementById('currentGroup').innerHTML = '<strong>Status:</strong> Ready for export';
                     
                     showAlert('⏹️ Processing stopped. Partial results are available for export.', 'info');
@@ -1175,7 +1203,8 @@ Make it engaging and informative.</textarea>
             if (data.total_errors === 0) {
                 progressStatus.innerHTML = `<strong style="color: #28a745;">✅ Completed Successfully!</strong> Processed all ${data.total_processed} items`;
             } else {
-                progressStatus.innerHTML = `<strong style="color: #ffc107;">⚠️ Completed with Issues</strong> ${data.total_processed - data.total_errors} successful, ${data.total_errors} errors`;
+                const successful = data.total_processed - data.total_errors;
+                progressStatus.innerHTML = `<strong style="color: #ffc107;">⚠️ Completed with Issues</strong> ${successful} successful, ${data.total_errors} errors (${data.total_processed} total)`;
             }
             
             // Update current group to show completion
@@ -1201,11 +1230,19 @@ Make it engaging and informative.</textarea>
                 <p style="margin-top: 10px; font-size: 0.9em; color: #666;" id="supportedFormats">
                     Loading supported formats...
                 </p>
-                <p style="font-size: 0.8em; color: #888; margin-top: 5px;">
-                    • CSV: Header row with column names<br>
-                    • JSON: Array of objects with consistent keys<br>
-                    • TXT: One item per line
-                </p>
+                <div style="font-size: 0.8em; color: #888; margin-top: 10px; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto;">
+                    <strong>📄 CSV:</strong> Header row with column names<br>
+                    <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">topic,audience,priority</code><br><br>
+                    
+                    <strong>📋 JSON:</strong> Array of objects with consistent keys<br>
+                    <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">[{"topic": "AI", "audience": "Students"}]</code><br><br>
+                    
+                    <strong>📝 TXT Simple:</strong> One prompt per line<br>
+                    <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">Write about AI for students</code><br><br>
+                    
+                    <strong>📊 TXT Structured:</strong> Header + comma-separated data<br>
+                    <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">topic,audience,priority<br>AI Basics,Students,High</code>
+                </div>
             `;
             uploadArea.style.pointerEvents = 'auto';
             

@@ -104,6 +104,11 @@ async def upload_file(file: UploadFile = File(...)):
             "data": data["rows"]
         }
         
+        # Clear previous data when new file is uploaded
+        uploaded_files.clear()
+        processing_jobs.clear()
+        results_storage.clear()
+        
         uploaded_files[file.filename] = file_info
         return file_info
         
@@ -111,26 +116,174 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(400, f"Error parsing file: {str(e)}")
 
 def parse_csv(content: bytes) -> Dict:
-    """Parse CSV content"""
-    text = content.decode('utf-8')
-    reader = csv.DictReader(io.StringIO(text))
-    rows = list(reader)
-    columns = list(rows[0].keys()) if rows else []
-    return {"columns": columns, "rows": rows}
+    """Parse CSV content with enhanced error handling"""
+    try:
+        text = content.decode('utf-8')
+        
+        # Check if file is empty
+        if not text.strip():
+            raise ValueError("CSV file is empty")
+        
+        reader = csv.DictReader(io.StringIO(text))
+        rows = list(reader)
+        
+        if not rows:
+            raise ValueError("CSV file contains no data rows. Ensure it has a header row and at least one data row.")
+        
+        columns = list(rows[0].keys())
+        
+        # Validate columns
+        if not columns or columns == [None] or '' in columns:
+            raise ValueError("CSV file has invalid or missing column headers. Ensure the first row contains column names.")
+        
+        # Check for empty rows
+        valid_rows = []
+        for i, row in enumerate(rows, 2):
+            if any(value.strip() for value in row.values()):
+                valid_rows.append(row)
+            elif all(not value.strip() for value in row.values()):
+                continue  # Skip completely empty rows
+        
+        if not valid_rows:
+            raise ValueError("CSV file contains no valid data rows")
+        
+        return {"columns": columns, "rows": valid_rows}
+        
+    except UnicodeDecodeError:
+        raise ValueError("CSV file contains invalid characters. Please ensure it's saved as UTF-8.")
+    except csv.Error as e:
+        raise ValueError(f"Invalid CSV format: {str(e)}")
+    except Exception as e:
+        if "CSV file" in str(e):
+            raise
+        raise ValueError(f"Error parsing CSV file: {str(e)}")
 
 def parse_json(content: bytes) -> Dict:
-    """Parse JSON content"""
-    data = json.loads(content.decode('utf-8'))
-    if isinstance(data, list) and data:
+    """Parse JSON content with enhanced error handling"""
+    try:
+        text = content.decode('utf-8').strip()
+        
+        if not text:
+            raise ValueError("JSON file is empty")
+        
+        data = json.loads(text)
+        
+        if not isinstance(data, list):
+            raise ValueError("JSON must be an array of objects. Example: [{\"column1\": \"value1\", \"column2\": \"value2\"}]")
+        
+        if not data:
+            raise ValueError("JSON array is empty. Please include at least one object.")
+        
+        # Validate all items are objects
+        for i, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise ValueError(f"Item {i+1} in JSON array is not an object. All items must be objects with key-value pairs.")
+        
+        # Get columns from first object
         columns = list(data[0].keys())
+        
+        if not columns:
+            raise ValueError("JSON objects have no properties. Each object must have at least one key-value pair.")
+        
+        # Validate all objects have consistent structure
+        for i, item in enumerate(data[1:], 2):
+            item_keys = set(item.keys())
+            expected_keys = set(columns)
+            
+            if item_keys != expected_keys:
+                missing = expected_keys - item_keys
+                extra = item_keys - expected_keys
+                error_msg = f"Object {i} has inconsistent structure."
+                if missing:
+                    error_msg += f" Missing keys: {list(missing)}."
+                if extra:
+                    error_msg += f" Extra keys: {list(extra)}."
+                raise ValueError(error_msg)
+        
         return {"columns": columns, "rows": data}
-    raise ValueError("JSON must be an array of objects")
+        
+    except UnicodeDecodeError:
+        raise ValueError("JSON file contains invalid characters. Please ensure it's saved as UTF-8.")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON format: {str(e)}. Please check your JSON syntax.")
+    except Exception as e:
+        if "JSON" in str(e):
+            raise
+        raise ValueError(f"Error parsing JSON file: {str(e)}")
 
 def parse_txt(content: bytes) -> Dict:
-    """Parse TXT content"""
-    lines = content.decode('utf-8').strip().split('\n')
-    rows = [{"content": line} for line in lines if line.strip()]
-    return {"columns": ["content"], "rows": rows}
+    """Parse TXT content - supports both structured and simple formats"""
+    try:
+        text = content.decode('utf-8').strip()
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        if not lines:
+            raise ValueError("TXT file is empty")
+        
+        # Check if first line looks like headers (contains delimiters)
+        first_line = lines[0]
+        
+        # Try to detect structured format (comma is primary, then pipe, then tab)
+        if ',' in first_line and len(lines) > 1:
+            # Check if it looks like CSV headers (not natural language)
+            words = first_line.split(',')
+            if len(words) >= 2 and all(len(word.strip()) < 30 and not ' ' in word.strip() for word in words[:3]):
+                # Comma-separated format: column1,column2,column3
+                return parse_txt_structured(lines, ',')
+        
+        if '|' in first_line and len(lines) > 1:
+            # Pipe-separated format: column1|column2|column3
+            return parse_txt_structured(lines, '|')
+        elif '\t' in first_line and len(lines) > 1:
+            # Tab-separated format
+            return parse_txt_structured(lines, '\t')
+        else:
+            # Simple format: one item per line
+            if len(lines) < 1:
+                raise ValueError("TXT file must contain at least one line of content")
+            
+            rows = [{"content": line} for line in lines]
+            return {"columns": ["content"], "rows": rows}
+            
+    except UnicodeDecodeError:
+        raise ValueError("TXT file contains invalid characters. Please ensure it's saved as UTF-8 text.")
+    except Exception as e:
+        raise ValueError(f"Error parsing TXT file: {str(e)}")
+
+def parse_txt_structured(lines: list, delimiter: str) -> Dict:
+    """Parse structured TXT with delimiters"""
+    try:
+        # First line as headers
+        headers = [col.strip() for col in lines[0].split(delimiter)]
+        
+        if len(headers) < 1:
+            raise ValueError(f"Structured TXT must have at least 1 column separated by '{delimiter}'")
+        
+        # Clean headers
+        headers = [header.strip() for header in headers if header.strip()]
+        
+        # Validate headers
+        for header in headers:
+            if not header or not header.replace('_', '').isalnum():
+                raise ValueError(f"Invalid column name '{header}'. Use alphanumeric characters and underscores only.")
+        
+        rows = []
+        for i, line in enumerate(lines[1:], 2):
+            values = [val.strip() for val in line.split(delimiter)]
+            
+            if len(values) != len(headers):
+                raise ValueError(f"Line {i} has {len(values)} values but expected {len(headers)} columns")
+            
+            row = dict(zip(headers, values))
+            rows.append(row)
+        
+        if not rows:
+            raise ValueError("No data rows found after header line")
+        
+        return {"columns": headers, "rows": rows}
+        
+    except Exception as e:
+        raise ValueError(f"Error parsing structured TXT: {str(e)}")
 
 @app.post("/start_processing")
 async def start_processing(config: ProcessingConfig, background_tasks: BackgroundTasks):
@@ -175,110 +328,25 @@ async def process_batch(job_id: str):
     conversation_history = {}
     rate_limiter = RateLimiter(config.ai_config.rate_limit)
     
+
+    
+    # Create semaphore for concurrent processing - use user's rate limit setting
+    max_concurrent = min(config.ai_config.rate_limit, 10)  # Limit concurrent requests
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
     # Log configuration if enabled
     if config.advanced_config.get("log_requests", False):
-        print(f"Starting batch processing with config: {config.ai_config.model}, rate_limit: {config.ai_config.rate_limit}")
+        print(f"Starting batch processing: {len(groups)} groups, max concurrent: {max_concurrent}")
     
+    # Process groups in parallel while maintaining conversation context
+    group_tasks = []
     for group_name, group_rows in groups.items():
-        if job["status"] == "stopped":
-            break
-            
-        while job["paused"]:
-            await asyncio.sleep(1)
-        
-        try:
-            # Process group
-            for row in group_rows:
-                if job["status"] == "stopped":
-                    break
-                    
-                while job["paused"]:
-                    await asyncio.sleep(1)
-                
-                try:
-                    await rate_limiter.wait()
-                    
-                    # Build prompt
-                    prompt = build_prompt(config.prompt_template, row)
-                    
-                    # Get or create conversation history
-                    if group_name not in conversation_history:
-                        conversation_history[group_name] = []
-                        if config.prompt_template.system:
-                            conversation_history[group_name].append({
-                                "role": "system", 
-                                "content": config.prompt_template.system
-                            })
-                    
-                    conversation_history[group_name].append({
-                        "role": "user", 
-                        "content": prompt
-                    })
-                    
-                    # Log request if enabled
-                    if config.advanced_config.get("log_requests", False):
-                        print(f"API Request for group {group_name}: {prompt[:100]}...")
-                    
-                    # Call AI API with retry logic
-                    response = await call_ai_api(
-                        client, 
-                        config.ai_config, 
-                        conversation_history[group_name]
-                    )
-                    
-                    conversation_history[group_name].append({
-                        "role": "assistant", 
-                        "content": response
-                    })
-                    
-                    # Store result
-                    result = {
-                        "group": group_name,
-                        "input": row,
-                        "prompt": prompt,
-                        "response": response,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    results.append(result)
-                    
-                    job["current"] += 1
-                    job["completed"] += 1
-                    
-                    # Emit progress
-                    await sio.emit("progress_update", {
-                        "current": job["current"],
-                        "total": job["total"],
-                        "group": group_name
-                    })
-                    
-                    await sio.emit("item_completed", {
-                        "index": job["current"] - 1,
-                        "group": group_name,
-                        "conversation_length": len(conversation_history.get(group_name, []))
-                    })
-                    
-                except Exception as e:
-                    job["errors"] += 1
-                    job["current"] += 1
-                    error_msg = str(e)
-                    
-                    # Log error if enabled
-                    if config.advanced_config.get("log_requests", False):
-                        print(f"API Error for group {group_name}: {error_msg}")
-                    
-                    await sio.emit("item_error", {
-                        "index": job["current"] - 1,
-                        "error": error_msg
-                    })
-                
-        except Exception as e:
-            # Handle group-level errors
-            print(f"Group processing error: {str(e)}")
-            job["errors"] += len(group_rows)
-            await sio.emit("item_error", {
-                "index": job["current"],
-                "error": f"Group error: {str(e)}"
-            })
+        task = process_group_batch(semaphore, group_name, group_rows, conversation_history, 
+                                 client, config, job, rate_limiter, results)
+        group_tasks.append(task)
+    
+    # Wait for all groups to complete
+    await asyncio.gather(*group_tasks, return_exceptions=True)
     
     # Store results
     results_storage[job_id] = results
@@ -305,6 +373,151 @@ def build_prompt(template: PromptTemplate, row: Dict[str, Any]) -> str:
     for key, value in row.items():
         prompt = prompt.replace(f"{{{key}}}", str(value))
     return prompt
+
+# Thread-safe locks for shared resources
+import threading
+_job_lock = threading.Lock()
+_results_lock = threading.Lock()
+_conversation_lock = threading.Lock()
+
+async def process_single_item(semaphore, group_name, row, conversation_history, 
+                               client, config, job, rate_limiter, results, row_index):
+    """Process a single item with conversation context - THREAD SAFE"""
+    if job["status"] == "stopped":
+        return
+        
+    while job["paused"]:
+        await asyncio.sleep(1)
+    
+    async with semaphore:  # Limit concurrent requests
+        try:
+            await rate_limiter.wait()
+            
+            # Build prompt
+            prompt = build_prompt(config.prompt_template, row)
+            
+            # Handle conversation context with thread safety
+            with _conversation_lock:
+                is_new_conversation = group_name not in conversation_history
+                if is_new_conversation:
+                    conversation_history[group_name] = []
+                    if config.prompt_template.system:
+                        conversation_history[group_name].append({
+                            "role": "system", 
+                            "content": config.prompt_template.system
+                        })
+            
+            # For grouped conversations, we need to maintain order
+            if config.mapping.group_by and config.mapping.group_by != "None":
+                # Thread-safe conversation handling
+                with _conversation_lock:
+                    conversation_history[group_name].append({
+                        "role": "user", 
+                        "content": prompt
+                    })
+                    # Make a copy for API call to avoid race conditions
+                    messages_copy = conversation_history[group_name].copy()
+                
+                # Call AI API with conversation history copy
+                response = await call_ai_api(client, config.ai_config, messages_copy)
+                
+                # Thread-safe update of conversation history
+                with _conversation_lock:
+                    conversation_history[group_name].append({
+                        "role": "assistant", 
+                        "content": response
+                    })
+            else:
+                # Independent processing - no conversation context needed
+                messages = []
+                if config.prompt_template.system:
+                    messages.append({"role": "system", "content": config.prompt_template.system})
+                messages.append({"role": "user", "content": prompt})
+                
+                response = await call_ai_api(client, config.ai_config, messages)
+            
+            # Log request if enabled
+            if config.advanced_config.get("log_requests", False):
+                conversation_type = "New conversation" if is_new_conversation else "Continuing conversation"
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] API Request for group {group_name} ({conversation_type}): {prompt[:100]}...")
+            
+            # Thread-safe result storage
+            result = {
+                "group": group_name,
+                "input": row,
+                "prompt": prompt,
+                "response": response,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            with _results_lock:
+                results.append(result)
+            
+            # Thread-safe job counter updates
+            with _job_lock:
+                job["current"] += 1
+                job["completed"] += 1
+                current_count = job["current"]
+                total_count = job["total"]
+            
+            # Emit progress
+            await sio.emit("progress_update", {
+                "current": current_count,
+                "total": total_count,
+                "group": group_name
+            })
+            
+            await sio.emit("item_completed", {
+                "index": current_count - 1,
+                "group": group_name,
+                "conversation_length": len(conversation_history.get(group_name, []))
+            })
+            
+        except Exception as e:
+            with _job_lock:
+                job["errors"] += 1
+                job["current"] += 1
+                current_count = job["current"]
+            
+            error_msg = str(e)
+            
+            # Log error if enabled
+            if config.advanced_config.get("log_requests", False):
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] API Error for group {group_name}: {error_msg}")
+            
+            await sio.emit("item_error", {
+                "index": current_count - 1,
+                "error": error_msg
+            })
+
+async def process_group_batch(semaphore, group_name, group_rows, conversation_history, 
+                            client, config, job, rate_limiter, results):
+    """Process a group of rows in TRUE batch (parallel) while handling conversation context"""
+    try:
+        if config.mapping.group_by and config.mapping.group_by != "None":
+            # For grouped conversations, process sequentially to maintain context
+            for i, row in enumerate(group_rows):
+                await process_single_item(semaphore, group_name, row, conversation_history, 
+                                         client, config, job, rate_limiter, results, i)
+        else:
+            # For independent processing, TRUE parallel batch processing
+            tasks = []
+            for i, row in enumerate(group_rows):
+                task = process_single_item(semaphore, group_name, row, conversation_history, 
+                                         client, config, job, rate_limiter, results, i)
+                tasks.append(task)
+            
+            # Process all items in parallel
+            await asyncio.gather(*tasks, return_exceptions=True)
+                
+    except Exception as e:
+        # Handle group-level errors
+        print(f"Group processing error for {group_name}: {str(e)}")
+        job["errors"] += len(group_rows)
+        await sio.emit("item_error", {
+            "index": job["current"],
+            "error": f"Group {group_name} error: {str(e)}"
+        })
 
 async def call_ai_api(client, config: AIConfig, messages: List[Dict], retry_count: int = 0) -> str:
     """Call AI API (OpenAI or Anthropic) with retry logic"""
@@ -381,9 +594,10 @@ async def call_ai_api(client, config: AIConfig, messages: List[Dict], retry_coun
 
 class RateLimiter:
     def __init__(self, requests_per_minute: int):
-        self.requests_per_minute = max(1, requests_per_minute)
+        self.requests_per_minute = max(1, min(requests_per_minute, 60))  # Enforce limits
         self.interval = 60.0 / self.requests_per_minute
         self.last_request_times = []
+        print(f"Rate limiter initialized: {self.requests_per_minute} requests/minute (interval: {self.interval:.2f}s)")
     
     async def wait(self):
         current_time = time.time()
@@ -457,7 +671,7 @@ async def export_results():
     # Find the most recent completed job
     latest_job = None
     for job_id, job in processing_jobs.items():
-        if job_id in results_storage:
+        if job_id in results_storage and job.get("status") == "completed":
             latest_job = job_id
             break
     
@@ -480,7 +694,6 @@ async def export_results():
     
     if format_type == "json":
         filename = f"results_{timestamp}.json" if timestamp else "results.json"
-        filepath = os.path.join(output_dir, filename)
         
         export_data = []
         for result in results:
@@ -503,7 +716,6 @@ async def export_results():
     
     elif format_type == "csv":
         filename = f"results_{timestamp}.csv" if timestamp else "results.csv"
-        filepath = os.path.join(output_dir, filename)
         
         csv_content = io.StringIO()
         if results:
