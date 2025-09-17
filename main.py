@@ -322,7 +322,10 @@ async def process_batch(job_id: str):
     if config.mapping.group_by and config.mapping.group_by != "None":
         groups = group_data(file_data["data"], config.mapping.group_by)
     else:
-        groups = {f"row_{i}": [row] for i, row in enumerate(file_data["data"])}
+        # Create individual groups with row index for ordering
+        groups = {}
+        for i, row in enumerate(file_data["data"]):
+            groups[f"row_{i}"] = [(row, i)]  # Include row index
     
     results = []
     conversation_history = {}
@@ -348,6 +351,9 @@ async def process_batch(job_id: str):
     # Wait for all groups to complete
     await asyncio.gather(*group_tasks, return_exceptions=True)
     
+    # Sort results by original row order before storing
+    results.sort(key=lambda x: x.get("row_index", 0))
+    
     # Store results
     results_storage[job_id] = results
     job["status"] = "completed"
@@ -357,14 +363,14 @@ async def process_batch(job_id: str):
         "total_errors": job["errors"]
     })
 
-def group_data(data: List[Dict], group_by: str) -> Dict[str, List[Dict]]:
-    """Group data by specified column"""
+def group_data(data: List[Dict], group_by: str) -> Dict[str, List[tuple]]:
+    """Group data by specified column with row indices"""
     groups = {}
-    for row in data:
+    for i, row in enumerate(data):
         key = str(row.get(group_by, "unknown"))
         if key not in groups:
             groups[key] = []
-        groups[key].append(row)
+        groups[key].append((row, i))  # Include row index
     return groups
 
 def build_prompt(template: PromptTemplate, row: Dict[str, Any]) -> str:
@@ -449,7 +455,8 @@ async def process_single_item(semaphore, group_name, row, conversation_history,
                 "prompt": prompt,
                 "response": response,
                 "timestamp": datetime.now().isoformat(),
-                "main_content": main_content_value
+                "main_content": main_content_value,
+                "row_index": row_index  # Add row index for ordering
             }
             
             with _results_lock:
@@ -498,15 +505,17 @@ async def process_group_batch(semaphore, group_name, group_rows, conversation_hi
     try:
         if config.mapping.group_by and config.mapping.group_by != "None":
             # For grouped conversations, process sequentially to maintain context
-            for i, row in enumerate(group_rows):
+            for row_data in group_rows:
+                row, row_index = row_data if isinstance(row_data, tuple) else (row_data, 0)
                 await process_single_item(semaphore, group_name, row, conversation_history, 
-                                         client, config, job, rate_limiter, results, i)
+                                         client, config, job, rate_limiter, results, row_index)
         else:
             # For independent processing, TRUE parallel batch processing
             tasks = []
-            for i, row in enumerate(group_rows):
+            for row_data in group_rows:
+                row, row_index = row_data if isinstance(row_data, tuple) else (row_data, 0)
                 task = process_single_item(semaphore, group_name, row, conversation_history, 
-                                         client, config, job, rate_limiter, results, i)
+                                         client, config, job, rate_limiter, results, row_index)
                 tasks.append(task)
             
             # Process all items in parallel
