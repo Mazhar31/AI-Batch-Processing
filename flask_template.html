@@ -538,41 +538,9 @@ Make it engaging and informative.</textarea>
                 </div>
             </div>
             
-            <!-- Step 5: Output Configuration -->
+            <!-- Step 5: Process Control -->
             <div class="step">
-                <h2><span class="step-number">5</span>Output Configuration</h2>
-                
-                <div class="output-options">
-                    <div class="form-group">
-                        <label>Output Format</label>
-                        <select id="outputFormat">
-                            <option value="individual">Individual text files</option>
-                            <option value="csv">Consolidated CSV</option>
-                            <option value="json">Consolidated JSON</option>
-                            <option value="both">Both individual and consolidated</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Output Directory</label>
-                        <input type="text" id="outputDir" value="./outputs/" placeholder="Enter output path...">
-                    </div>
-                </div>
-                
-                <div class="checkbox-group">
-                    <input type="checkbox" id="includePrompt"> 
-                    <label for="includePrompt">Include original prompt in output</label>
-                </div>
-                
-                <div class="checkbox-group">
-                    <input type="checkbox" id="timestampFiles" checked> 
-                    <label for="timestampFiles">Add timestamps to filenames</label>
-                </div>
-            </div>
-            
-            <!-- Step 6: Process Control -->
-            <div class="step">
-                <h2><span class="step-number">6</span>Start Processing</h2>
+                <h2><span class="step-number">5</span>Start Processing</h2>
                 
                 <div id="validationAlerts"></div>
                 
@@ -601,6 +569,42 @@ Make it engaging and informative.</textarea>
                         <button class="btn btn-danger" onclick="stopProcessing()" style="display: none;">⏹️ Stop</button>
                         <button class="btn btn-success" onclick="exportResults()" style="display: none;">💾 Export Results</button>
                         <button class="btn btn-secondary" onclick="resetSystem()" style="display: none;" id="resetBtn">🔄 Reset & Start New</button>
+                    </div>
+                    
+                    <!-- Export Section -->
+                    <div id="exportSection" style="display: none; margin-top: 30px; padding: 25px; background: #f8f9fa; border-radius: 15px; border: 2px solid #28a745;">
+                        <h3 style="margin-bottom: 20px; color: #2c3e50;">📥 Download Results</h3>
+                        <p style="margin-bottom: 20px; color: #666;">Choose your preferred format and download options. You can download multiple times in different formats.</p>
+                        
+                        <div class="form-row" style="margin-bottom: 20px;">
+                            <div class="form-col">
+                                <label>Export Format</label>
+                                <select id="exportFormat">
+                                    <option value="individual">Individual text files (ZIP)</option>
+                                    <option value="csv">Consolidated CSV</option>
+                                    <option value="json">Consolidated JSON</option>
+                                    <option value="both">Both individual and consolidated (ZIP)</option>
+                                </select>
+                            </div>
+                            <div class="form-col">
+                                <div class="checkbox-group" style="margin-top: 25px;">
+                                    <input type="checkbox" id="exportIncludePrompt"> 
+                                    <label for="exportIncludePrompt">Include original prompt in output</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="checkbox-group" style="margin-bottom: 20px;">
+                            <input type="checkbox" id="exportTimestampFiles" checked> 
+                            <label for="exportTimestampFiles">Add timestamps to filenames</label>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button class="btn" onclick="downloadResults()">💾 Download Results</button>
+                            <button class="btn btn-secondary" onclick="downloadResults('csv')">📊 Quick CSV</button>
+                            <button class="btn btn-secondary" onclick="downloadResults('json')">📋 Quick JSON</button>
+                            <button class="btn btn-secondary" onclick="downloadResults('individual')">📁 Quick Individual</button>
+                        </div>
                     </div>
                     
                     <div class="status-log" id="statusLog">
@@ -966,11 +970,7 @@ Make it engaging and informative.</textarea>
                 errors.push(`Retry attempts must be between ${CONFIG.RETRY_RANGE[0]} and ${CONFIG.RETRY_RANGE[1]}`);
             }
             
-            // Validate output directory
-            const outputDir = document.getElementById('outputDir').value.trim();
-            if (!outputDir) {
-                errors.push('Output directory is required');
-            }
+
             
             if (errors.length > 0) {
                 showValidationAlert(`❌ Configuration errors: ${errors.join(' • ')}`, 'error');
@@ -1032,12 +1032,6 @@ Make it engaging and informative.</textarea>
                 prompt_template: {
                     system: document.getElementById('systemPrompt').value.trim() || null,
                     main: document.getElementById('mainPrompt').value
-                },
-                output: {
-                    format: document.getElementById('outputFormat').value,
-                    directory: document.getElementById('outputDir').value,
-                    include_prompt: document.getElementById('includePrompt').checked,
-                    timestamp_files: document.getElementById('timestampFiles').checked
                 },
                 advanced_config: {
                     log_requests: document.getElementById('logRequests').checked
@@ -1125,22 +1119,41 @@ Make it engaging and informative.</textarea>
             }
         }
         
-        function exportResults() {
+        function downloadResults(quickFormat = null) {
+            const format = quickFormat || document.getElementById('exportFormat').value;
+            const includePrompt = document.getElementById('exportIncludePrompt').checked;
+            const timestampFiles = document.getElementById('exportTimestampFiles').checked;
+            
+            // Build URL with parameters
+            const params = new URLSearchParams({
+                format_type: format,
+                include_prompt: includePrompt,
+                timestamp_files: timestampFiles
+            });
+            
             // Show loading state
-            const exportBtn = document.querySelector('button[onclick="exportResults()"]');
-            const originalText = exportBtn.textContent;
-            exportBtn.textContent = '⏳ Exporting...';
-            exportBtn.disabled = true;
+            const downloadBtn = document.querySelector('button[onclick="downloadResults()"]');
+            if (downloadBtn && !quickFormat) {
+                const originalText = downloadBtn.textContent;
+                downloadBtn.textContent = '⏳ Downloading...';
+                downloadBtn.disabled = true;
+                
+                setTimeout(() => {
+                    downloadBtn.textContent = originalText;
+                    downloadBtn.disabled = false;
+                }, 3000);
+            }
             
-            window.location.href = '/export_results';
-            addLogEntry('💾 Exporting results...');
+            // Start download
+            window.location.href = `/export_results?${params.toString()}`;
             
-            // Reset button after delay
+            const formatName = format === 'both' ? 'combined' : format;
+            const promptText = includePrompt ? 'with prompts' : 'without prompts';
+            addLogEntry(`💾 Downloading ${formatName} format ${promptText}...`);
+            
             setTimeout(() => {
-                exportBtn.textContent = originalText;
-                exportBtn.disabled = false;
-                addLogEntry('✅ Export completed!');
-            }, 3000);
+                addLogEntry('✅ Download completed!');
+            }, 2000);
         }
         
         function updateProgress(data) {
@@ -1195,8 +1208,11 @@ Make it engaging and informative.</textarea>
         function updateControlsForCompletion(data) {
             document.getElementById('pauseBtn').style.display = 'none';
             document.querySelector('button[onclick="stopProcessing()"]').style.display = 'none';
-            document.querySelector('button[onclick="exportResults()"]').style.display = 'inline-block';
+            document.querySelector('button[onclick="exportResults()"]').style.display = 'none';
             document.getElementById('resetBtn').style.display = 'inline-block';
+            
+            // Show export section
+            document.getElementById('exportSection').style.display = 'block';
             
             // Update progress status
             const progressStatus = document.getElementById('progressStatus');
@@ -1208,10 +1224,10 @@ Make it engaging and informative.</textarea>
             }
             
             // Update current group to show completion
-            document.getElementById('currentGroup').innerHTML = '<strong>Status:</strong> Ready for export';
+            document.getElementById('currentGroup').innerHTML = '<strong>Status:</strong> Ready for download';
             
             // Update ETA and rate for final stats
-            document.getElementById('etaInfo').textContent = 'Processing completed';
+            document.getElementById('etaInfo').textContent = 'Processing completed - Choose download format';
         }
         
         function resetProgressSection() {
@@ -1219,6 +1235,7 @@ Make it engaging and informative.</textarea>
             document.getElementById('progressFill').style.width = '0%';
             document.getElementById('statusLog').innerHTML = '<div>[Ready] Waiting to start batch processing...</div>';
             document.getElementById('resetBtn').style.display = 'none';
+            document.getElementById('exportSection').style.display = 'none';
         }
         
         function resetUploadArea() {

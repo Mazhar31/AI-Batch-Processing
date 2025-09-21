@@ -57,7 +57,6 @@ class ProcessingConfig(BaseModel):
     ai_config: AIConfig
     mapping: MappingConfig
     prompt_template: PromptTemplate
-    output: OutputConfig
     advanced_config: Optional[Dict[str, Any]] = {}
 
 # Global state
@@ -322,10 +321,7 @@ async def process_batch(job_id: str):
     if config.mapping.group_by and config.mapping.group_by != "None":
         groups = group_data(file_data["data"], config.mapping.group_by)
     else:
-        # Create individual groups with row index for ordering
-        groups = {}
-        for i, row in enumerate(file_data["data"]):
-            groups[f"row_{i}"] = [(row, i)]  # Include row index
+        groups = {f"row_{i}": [row] for i, row in enumerate(file_data["data"])}
     
     results = []
     conversation_history = {}
@@ -351,9 +347,6 @@ async def process_batch(job_id: str):
     # Wait for all groups to complete
     await asyncio.gather(*group_tasks, return_exceptions=True)
     
-    # Sort results by original row order before storing
-    results.sort(key=lambda x: x.get("row_index", 0))
-    
     # Store results
     results_storage[job_id] = results
     job["status"] = "completed"
@@ -363,14 +356,17 @@ async def process_batch(job_id: str):
         "total_errors": job["errors"]
     })
 
-def group_data(data: List[Dict], group_by: str) -> Dict[str, List[tuple]]:
-    """Group data by specified column with row indices"""
+def group_data(data: List[Dict], group_by: str) -> Dict[str, List[Dict]]:
+    """Group data by specified column with row index tracking"""
     groups = {}
-    for i, row in enumerate(data):
+    for row_index, row in enumerate(data):
         key = str(row.get(group_by, "unknown"))
         if key not in groups:
             groups[key] = []
-        groups[key].append((row, i))  # Include row index
+        # Add row index for maintaining original order
+        row_with_index = row.copy()
+        row_with_index['_row_index'] = row_index
+        groups[key].append(row_with_index)
     return groups
 
 def build_prompt(template: PromptTemplate, row: Dict[str, Any]) -> str:
@@ -447,17 +443,23 @@ async def process_single_item(semaphore, group_name, row, conversation_history,
                 conversation_type = "New conversation" if is_new_conversation else "Continuing conversation"
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] API Request for group {group_name} ({conversation_type}): {prompt[:100]}...")
             
-            # Thread-safe result storage
+            # Thread-safe result storage with all original fields preserved
             main_content_value = row.get(config.mapping.main_content, "") if config.mapping.main_content else ""
+            
+            # Create result with all original file columns preserved
             result = {
                 "group": group_name,
-                "input": row,
-                "prompt": prompt,
+                "main_content": main_content_value,
                 "response": response,
                 "timestamp": datetime.now().isoformat(),
-                "main_content": main_content_value,
-                "row_index": row_index  # Add row index for ordering
+                "prompt": prompt,
+                "row_index": row.get('_row_index', 0)
             }
+            
+            # Add all original file columns (excluding internal _row_index)
+            for key, value in row.items():
+                if key != '_row_index' and key not in result:
+                    result[key] = value
             
             with _results_lock:
                 results.append(result)
@@ -505,17 +507,15 @@ async def process_group_batch(semaphore, group_name, group_rows, conversation_hi
     try:
         if config.mapping.group_by and config.mapping.group_by != "None":
             # For grouped conversations, process sequentially to maintain context
-            for row_data in group_rows:
-                row, row_index = row_data if isinstance(row_data, tuple) else (row_data, 0)
+            for i, row in enumerate(group_rows):
                 await process_single_item(semaphore, group_name, row, conversation_history, 
-                                         client, config, job, rate_limiter, results, row_index)
+                                         client, config, job, rate_limiter, results, i)
         else:
             # For independent processing, TRUE parallel batch processing
             tasks = []
-            for row_data in group_rows:
-                row, row_index = row_data if isinstance(row_data, tuple) else (row_data, 0)
+            for i, row in enumerate(group_rows):
                 task = process_single_item(semaphore, group_name, row, conversation_history, 
-                                         client, config, job, rate_limiter, results, row_index)
+                                         client, config, job, rate_limiter, results, i)
                 tasks.append(task)
             
             # Process all items in parallel
@@ -676,9 +676,11 @@ async def reset_system():
     results_storage.clear()
     return {"status": "reset_complete"}
 
+
+
 @app.get("/export_results")
-async def export_results():
-    """Export processing results"""
+async def export_results(format_type: str, include_prompt: bool = False, timestamp_files: bool = True):
+    """Export processing results in specified format"""
     # Find the most recent completed job
     latest_job = None
     for job_id, job in processing_jobs.items():
@@ -690,33 +692,44 @@ async def export_results():
         raise HTTPException(404, "No results to export")
     
     results = results_storage[latest_job]
-    job = processing_jobs[latest_job]
-    config = job["config"]
     
-    # Create export based on format
-    config = job["config"]
-    output_config = config["output"] if isinstance(config, dict) else config.output
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") if (output_config["timestamp_files"] if isinstance(output_config, dict) else output_config.timestamp_files) else ""
+    # Sort results by original row order
+    results.sort(key=lambda x: x.get('row_index', 0))
     
-    # No need to create directories - streaming directly to user
+    # Generate timestamp if requested
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") if timestamp_files else ""
     
-    format_type = output_config["format"] if isinstance(output_config, dict) else output_config.format
-    include_prompt = output_config["include_prompt"] if isinstance(output_config, dict) else output_config.include_prompt
+    # Get original file columns for consistent output structure
+    original_columns = set()
+    for result in results:
+        for key in result.keys():
+            if key not in ['group', 'main_content', 'response', 'timestamp', 'prompt', 'row_index']:
+                original_columns.add(key)
+    original_columns = sorted(list(original_columns))
     
     if format_type == "json":
         filename = f"results_{timestamp}.json" if timestamp else "results.json"
         
         export_data = []
         for result in results:
+            # Build consistent output structure
             item = {
                 "group": result.get("group", ""),
-                "main_content": result.get("main_content", ""),
-                "response": result.get("response", ""),
-                "timestamp": result.get("timestamp", "")
+                "main_content": result.get("main_content", "")
             }
+            
+            # Add all original file columns in consistent order
+            for col in original_columns:
+                item[col] = result.get(col, "")
+            
+            # Add prompt if requested
             if include_prompt:
                 item["prompt"] = result.get("prompt", "")
-                item["input"] = result.get("input", {})
+            
+            # Add response and timestamp last
+            item["response"] = result.get("response", "")
+            item["timestamp"] = result.get("timestamp", "")
+            
             export_data.append(item)
         
         json_content = json.dumps(export_data, indent=2)
@@ -731,9 +744,11 @@ async def export_results():
         
         csv_content = io.StringIO()
         if results:
-            fieldnames = ["group", "main_content", "response", "timestamp"]
+            # Build consistent fieldnames in proper order
+            fieldnames = ["group", "main_content"] + original_columns
             if include_prompt:
-                fieldnames = ["group", "main_content", "prompt", "input", "response", "timestamp"]
+                fieldnames.append("prompt")
+            fieldnames.extend(["response", "timestamp"])
             
             writer = csv.DictWriter(csv_content, fieldnames=fieldnames)
             writer.writeheader()
@@ -741,13 +756,21 @@ async def export_results():
             for result in results:
                 row = {
                     "group": result.get("group", ""),
-                    "main_content": result.get("main_content", ""),
-                    "response": result.get("response", ""),
-                    "timestamp": result.get("timestamp", "")
+                    "main_content": result.get("main_content", "")
                 }
+                
+                # Add all original file columns
+                for col in original_columns:
+                    row[col] = result.get(col, "")
+                
+                # Add prompt if requested
                 if include_prompt:
                     row["prompt"] = result.get("prompt", "")
-                    row["input"] = json.dumps(result.get("input", {})) if isinstance(result.get("input"), dict) else str(result.get("input", ""))
+                
+                # Add response and timestamp
+                row["response"] = result.get("response", "")
+                row["timestamp"] = result.get("timestamp", "")
+                
                 writer.writerow(row)
         
         return Response(
@@ -759,22 +782,30 @@ async def export_results():
     elif format_type == "individual":
         # Create individual files and zip them
         zip_filename = f"results_{timestamp}.zip" if timestamp else "results.zip"
-
         
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for i, result in enumerate(results):
                 file_content = result.get("response", "")
+                
                 if include_prompt:
-                    input_data = result.get("input", {})
-                    input_str = json.dumps(input_data, indent=2) if isinstance(input_data, dict) else str(input_data)
+                    # Build structured input data with all original columns
+                    input_sections = []
+                    input_sections.append(f"GROUP: {result.get('group', '')}")
+                    input_sections.append(f"MAIN_CONTENT: {result.get('main_content', '')}")
+                    
+                    # Add all original file columns
+                    for col in original_columns:
+                        input_sections.append(f"{col.upper()}: {result.get(col, '')}")
+                    
+                    input_str = "\n".join(input_sections)
                     prompt_text = result.get("prompt", "")
                     timestamp_text = result.get("timestamp", "")
                     file_content = f"INPUT:\n{input_str}\n\nPROMPT:\n{prompt_text}\n\nRESPONSE:\n{file_content}\n\nTIMESTAMP: {timestamp_text}"
                 
                 group_name = result.get("group", "unknown")
                 safe_group = "".join(c for c in str(group_name) if c.isalnum() or c in (' ', '-', '_')).strip()
-                if not safe_group:  # Handle empty group names
+                if not safe_group:
                     safe_group = "unknown"
                 filename = f"result_{i+1:03d}_{safe_group}_{timestamp}.txt" if timestamp else f"result_{i+1:03d}_{safe_group}.txt"
                 zipf.writestr(filename, file_content)
@@ -794,42 +825,60 @@ async def export_results():
             # Add individual files
             for i, result in enumerate(results):
                 file_content = result.get("response", "")
+                
                 if include_prompt:
-                    input_data = result.get("input", {})
-                    input_str = json.dumps(input_data, indent=2) if isinstance(input_data, dict) else str(input_data)
+                    # Build structured input data with all original columns
+                    input_sections = []
+                    input_sections.append(f"GROUP: {result.get('group', '')}")
+                    input_sections.append(f"MAIN_CONTENT: {result.get('main_content', '')}")
+                    
+                    # Add all original file columns
+                    for col in original_columns:
+                        input_sections.append(f"{col.upper()}: {result.get(col, '')}")
+                    
+                    input_str = "\n".join(input_sections)
                     prompt_text = result.get("prompt", "")
                     timestamp_text = result.get("timestamp", "")
                     file_content = f"INPUT:\n{input_str}\n\nPROMPT:\n{prompt_text}\n\nRESPONSE:\n{file_content}\n\nTIMESTAMP: {timestamp_text}"
                 
                 group_name = result.get("group", "unknown")
                 safe_group = "".join(c for c in str(group_name) if c.isalnum() or c in (' ', '-', '_')).strip()
-                if not safe_group:  # Handle empty group names
+                if not safe_group:
                     safe_group = "unknown"
                 filename = f"individual/result_{i+1:03d}_{safe_group}_{timestamp}.txt" if timestamp else f"individual/result_{i+1:03d}_{safe_group}.txt"
                 zipf.writestr(filename, file_content)
             
-            # Add consolidated JSON
+            # Add consolidated JSON with consistent structure
             export_data = []
             for result in results:
                 item = {
                     "group": result.get("group", ""),
-                    "main_content": result.get("main_content", ""),
-                    "response": result.get("response", ""),
-                    "timestamp": result.get("timestamp", "")
+                    "main_content": result.get("main_content", "")
                 }
+                
+                # Add all original file columns
+                for col in original_columns:
+                    item[col] = result.get(col, "")
+                
+                # Add prompt if requested
                 if include_prompt:
                     item["prompt"] = result.get("prompt", "")
-                    item["input"] = result.get("input", {})
+                
+                # Add response and timestamp
+                item["response"] = result.get("response", "")
+                item["timestamp"] = result.get("timestamp", "")
+                
                 export_data.append(item)
             
             json_filename = f"results_{timestamp}.json" if timestamp else "results.json"
             zipf.writestr(f"consolidated/{json_filename}", json.dumps(export_data, indent=2))
             
-            # Add consolidated CSV
+            # Add consolidated CSV with consistent structure
             csv_content = io.StringIO()
-            fieldnames = ["group", "main_content", "response", "timestamp"]
+            fieldnames = ["group", "main_content"] + original_columns
             if include_prompt:
-                fieldnames = ["group", "main_content", "prompt", "input", "response", "timestamp"]
+                fieldnames.append("prompt")
+            fieldnames.extend(["response", "timestamp"])
             
             writer = csv.DictWriter(csv_content, fieldnames=fieldnames)
             writer.writeheader()
@@ -837,13 +886,21 @@ async def export_results():
             for result in results:
                 row = {
                     "group": result.get("group", ""),
-                    "main_content": result.get("main_content", ""),
-                    "response": result.get("response", ""),
-                    "timestamp": result.get("timestamp", "")
+                    "main_content": result.get("main_content", "")
                 }
+                
+                # Add all original file columns
+                for col in original_columns:
+                    row[col] = result.get(col, "")
+                
+                # Add prompt if requested
                 if include_prompt:
                     row["prompt"] = result.get("prompt", "")
-                    row["input"] = json.dumps(result.get("input", {})) if isinstance(result.get("input"), dict) else str(result.get("input", ""))
+                
+                # Add response and timestamp
+                row["response"] = result.get("response", "")
+                row["timestamp"] = result.get("timestamp", "")
+                
                 writer.writerow(row)
             
             csv_filename = f"results_{timestamp}.csv" if timestamp else "results.csv"
